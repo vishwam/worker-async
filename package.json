@@ -1,0 +1,36 @@
+{
+  "name": "worker-async",
+  "version": "0.1.0",
+  "description": "A promise-based rpc interface for web workers",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "build:es3": "tsc --target es3 --outDir ./lib/es3",
+    "watch": "tsc --watch",
+    "prepare": "npm run build && npm run build:es3"
+  },
+  "author": {
+    "name": "Vishwam Subramanyam",
+    "email": "vishwam@live.com"
+  },
+  "homepage": "https://github.com/vishwam/worker-async#readme",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vishwam/worker-async.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vishwam/worker-async/issues"
+  },
+  "keywords": [
+    "web worker",
+    "worker",
+    "promise",
+    "async",
+    "rpc"
+  ],
+  "devDependencies": {
+    "typescript": "^3.7.4"
+  }
+}

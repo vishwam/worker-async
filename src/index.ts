@@ -5,6 +5,7 @@ const enum MessageType {
     ResolveIterator,
     RequestNextIterator,
     ResolveNextIterator,
+    CancelIterator,
     Reject,
 };
 
@@ -31,6 +32,9 @@ type Message = {
     reqId: number;
     done?: boolean;
     value: any;
+} | {
+    _type: MessageType.CancelIterator;
+    reqId: number;
 } | {
     _type: MessageType.Reject;
     reqId: number;
@@ -82,25 +86,49 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
                                     });
                                 });
 
-                                result[Symbol.asyncIterator] = async function* () {
-                                    await result;
-                                    while (true) {
-                                        postMessage(worker, {
-                                            _type: MessageType.RequestNextIterator,
-                                            reqId,
-                                        });
+                                result[Symbol.asyncIterator] = (): AsyncIterator<any> => {
+                                    let isIteratorResolved = false;
+                                    return {
+                                        next: async () => {
+                                            if (!isIteratorResolved) {
+                                                await result; // wait for the ResolveIterator message
+                                                isIteratorResolved = true;
+                                            }
+                                            
+                                            // request the next item:
+                                            postMessage(worker, {
+                                                _type: MessageType.RequestNextIterator,
+                                                reqId,
+                                            });
+    
+                                            // return a promise for the next reply to this request:
+                                            return new Promise((resolve, reject) => {
+                                                req.resolve = resolve;
+                                                req.reject = reject;
+                                            });
+                                        },
+                                        return: async value => {
+                                            // if the consumer bailed out early, send a cencellation message
+                                            // to clean up on the other side:
+                                            requests.delete(reqId);
+                                            postMessage(worker, {
+                                                _type: MessageType.CancelIterator,
+                                                reqId,
+                                            });
+                                            
+                                            return { done: true, value: await value };
+                                        },
+                                        throw: err => {
+                                            // if the consumer threw an exception while iterating, clean up:
+                                            requests.delete(reqId);
+                                            postMessage(worker, {
+                                                _type: MessageType.CancelIterator,
+                                                reqId,
+                                            });
 
-                                        const { done, value } = await new Promise((resolve, reject) => {
-                                            req.resolve = resolve;
-                                            req.reject = reject;
-                                        });
-
-                                        if (done) {
-                                            return;
-                                        } else {
-                                            yield value;
-                                        }
-                                    }
+                                            throw err;
+                                        },
+                                    };
                                 };
 
                                 return result;
@@ -161,7 +189,7 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
                             if (iter === undefined) {
                                 throw new Error(`No async iterators found for request ${msg.reqId}`);
                             }
-    
+
                             const { done, value } = await iter.next();
                             isDone = done;
                             postMessage(worker, {
@@ -174,7 +202,7 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
                             postError(worker, msg.reqId, err);
                             isDone = true;
                         }
-                        
+
                         if (isDone) {
                             asyncIterators.delete(msg.reqId);
                         }
@@ -190,6 +218,12 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
                         }
                     }
 
+                    break;
+                }
+                case MessageType.CancelIterator: {
+                    const iter = asyncIterators.get(msg.reqId);
+                    asyncIterators.delete(msg.reqId);
+                    iter?.return?.(); // tell iterator that we're returning early
                     break;
                 }
                 case MessageType.Reject: {

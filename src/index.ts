@@ -146,7 +146,7 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
                         try {
                             const fn: Function = (host as any)[msg.method];
                             const result = await fn.apply(host, msg.args);
-                            if (result && result[Symbol.asyncIterator]) {
+                            if (result?.[Symbol.asyncIterator]) {
                                 asyncIterators.set(msg.reqId, result[Symbol.asyncIterator]());
                                 postMessage(worker, {
                                     _type: MessageType.ResolveIterator,

@@ -50,14 +50,14 @@ type Constructor<Remote, Host> = new (remote?: Remote) => Host;
  * @param ctor {Function} A class that contains the methods to expose to the other end
  * @returns { remote, host } The host and remote objects
  */
-export default function <Remote = any, Host = any>(worker: Worker, ctor?: Constructor<Remote, Host>) {
+export default function promisify<Remote = any, Host = any>(worker: Worker, ctor?: Constructor<Remote, Host>) {
     return new Promise<{ remote: Remote; host: Host }>((resolve, reject) => {
         const requests = new Map<number, Request>();
         const asyncIterators = new Map<number, AsyncIterator<any>>();
         let lastReqId = 0;
         let host: Host;
 
-        async function messageListener(ev: MessageEvent) {
+        function messageListener(ev: MessageEvent) {
             const msg: RpcMessage = ev.data;
             if (msg == null) {
                 return;
@@ -114,26 +114,27 @@ export default function <Remote = any, Host = any>(worker: Worker, ctor?: Constr
                     break;
                 }
                 case MessageType.Request: {
-                    try {
-                        const fn: Function = (host as any)[msg.method];
-                        const result = await fn.apply(host, msg.args);
-                        if (result && result[Symbol.asyncIterator]) {
-                            asyncIterators.set(msg.reqId, result[Symbol.asyncIterator]());
-                            postMessage(worker, {
-                                _rpcType: MessageType.ResolveIterator,
-                                reqId: msg.reqId,
-                            });
-                        } else {
-                            postMessage(worker, {
-                                _rpcType: MessageType.Resolve,
-                                reqId: msg.reqId,
-                                value: result,
-                            });
+                    (async () => {
+                        try {
+                            const fn: Function = (host as any)[msg.method];
+                            const result = await fn.apply(host, msg.args);
+                            if (result && result[Symbol.asyncIterator]) {
+                                asyncIterators.set(msg.reqId, result[Symbol.asyncIterator]());
+                                postMessage(worker, {
+                                    _rpcType: MessageType.ResolveIterator,
+                                    reqId: msg.reqId,
+                                });
+                            } else {
+                                postMessage(worker, {
+                                    _rpcType: MessageType.Resolve,
+                                    reqId: msg.reqId,
+                                    value: result,
+                                });
+                            }
+                        } catch (err) {
+                            postError(worker, msg.reqId, err);
                         }
-                    } catch (err) {
-                        postError(worker, msg.reqId, err);
-                    }
-
+                    })();
                     break;
                 }
                 case MessageType.Resolve: {
@@ -161,30 +162,31 @@ export default function <Remote = any, Host = any>(worker: Worker, ctor?: Constr
                     break;
                 }
                 case MessageType.RequestNextIterator: {
-                    let isDone: boolean | undefined;
-                    try {
-                        const iter = asyncIterators.get(msg.reqId);
-                        if (iter === undefined) {
-                            throw new Error(`No async iterators found for request ${msg.reqId}`);
+                    (async () => {
+                        let isDone: boolean | undefined;
+                        try {
+                            const iter = asyncIterators.get(msg.reqId);
+                            if (iter === undefined) {
+                                throw new Error(`No async iterators found for request ${msg.reqId}`);
+                            }
+    
+                            const { done, value } = await iter.next();
+                            isDone = done;
+                            postMessage(worker, {
+                                _rpcType: MessageType.ResolveNextIterator,
+                                reqId: msg.reqId,
+                                done,
+                                value,
+                            });
+                        } catch (err) {
+                            postError(worker, msg.reqId, err);
+                            isDone = true;
                         }
-
-                        const { done, value } = await iter.next();
-                        isDone = done;
-                        postMessage(worker, {
-                            _rpcType: MessageType.ResolveNextIterator,
-                            reqId: msg.reqId,
-                            done,
-                            value,
-                        });
-                    } catch (err) {
-                        postError(worker, msg.reqId, err);
-                        isDone = true;
-                    }
-
-                    if (isDone) {
-                        asyncIterators.delete(msg.reqId);
-                    }
-
+                        
+                        if (isDone) {
+                            asyncIterators.delete(msg.reqId);
+                        }
+                    })();
                     break;
                 }
                 case MessageType.ResolveNextIterator: {

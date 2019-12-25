@@ -16,13 +16,8 @@
   },
   "homepage": "https://github.com/vishwam/worker-async#readme",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/vishwam/worker-async.git"
-  },
-  "bugs": {
-    "url": "https://github.com/vishwam/worker-async/issues"
-  },
+  "repository": "github:vishwam/worker-async",
+  "bugs": "https://github.com/vishwam/worker-async/issues",
   "keywords": [
     "web worker",
     "worker",

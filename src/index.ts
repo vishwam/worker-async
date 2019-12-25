@@ -42,20 +42,20 @@ interface Request {
     reject: Function;
 }
 
-type Constructor<R, H> = new (r?: R) => H;
+type Constructor<Remote, Host> = new (remote?: Remote) => Host;
 
 /**
  * Initiate an RPC connection using the Worker postMessage and event listeners
  * @param worker {Worker} The Worker instance
  * @param ctor {Function} A class that contains the methods to expose to the other end
- * @returns { host, remote } The host and remote objects
+ * @returns { remote, host } The host and remote objects
  */
-export default function <R = any, H = any>(worker: Worker, ctor?: Constructor<R, H>) {
-    return new Promise<{ host: H, remote: R }>((resolve, reject) => {
+export default function <Remote = any, Host = any>(worker: Worker, ctor?: Constructor<Remote, Host>) {
+    return new Promise<{ remote: Remote; host: Host }>((resolve, reject) => {
         const requests = new Map<number, Request>();
         const asyncIterators = new Map<number, AsyncIterator<any>>();
         let lastReqId = 0;
-        let host: H;
+        let host: Host;
 
         async function messageListener(ev: MessageEvent) {
             const msg: RpcMessage = ev.data;
@@ -108,7 +108,7 @@ export default function <R = any, H = any>(worker: Worker, ctor?: Constructor<R,
                         }
 
                         host = ctor ? new ctor(remote) : {} as any;
-                        resolve({ host, remote });
+                        resolve({ remote, host });
                     }
 
                     break;

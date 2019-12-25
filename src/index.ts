@@ -146,14 +146,6 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
 
                     break;
                 }
-                case MessageType.Reject: {
-                    const req = requests.get(msg.reqId);
-                    if (req !== undefined) {
-                        req.reject(msg.error);
-                        requests.delete(msg.reqId);
-                    }
-                    break;
-                }
                 case MessageType.ResolveIterator: {
                     const req = requests.get(msg.reqId);
                     if (req !== undefined) {
@@ -198,6 +190,14 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
                         }
                     }
 
+                    break;
+                }
+                case MessageType.Reject: {
+                    const req = requests.get(msg.reqId);
+                    if (req !== undefined) {
+                        req.reject(msg.error);
+                        requests.delete(msg.reqId);
+                    }
                     break;
                 }
             }

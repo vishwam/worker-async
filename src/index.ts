@@ -8,31 +8,31 @@ const enum MessageType {
     Reject,
 };
 
-type RpcMessage = {
-    _rpcType: MessageType.Initiate;
+type Message = {
+    _type: MessageType.Initiate;
     methods: string[];
 } | {
-    _rpcType: MessageType.Request;
+    _type: MessageType.Request;
     reqId: number;
     method: string;
     args: any[];
 } | {
-    _rpcType: MessageType.Resolve;
+    _type: MessageType.Resolve;
     reqId: number;
     value: any;
 } | {
-    _rpcType: MessageType.ResolveIterator;
+    _type: MessageType.ResolveIterator;
     reqId: number;
 } | {
-    _rpcType: MessageType.RequestNextIterator;
+    _type: MessageType.RequestNextIterator;
     reqId: number;
 } | {
-    _rpcType: MessageType.ResolveNextIterator;
+    _type: MessageType.ResolveNextIterator;
     reqId: number;
     done?: boolean;
     value: any;
 } | {
-    _rpcType: MessageType.Reject;
+    _type: MessageType.Reject;
     reqId: number;
     error: any;
 };
@@ -58,12 +58,12 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
         let host: Host;
 
         function messageListener(ev: MessageEvent) {
-            const msg: RpcMessage = ev.data;
+            const msg: Message = ev.data;
             if (msg == null) {
                 return;
             }
 
-            switch (msg._rpcType) {
+            switch (msg._type) {
                 case MessageType.Initiate: {
                     if (host === undefined) {
                         const remote: any = {};
@@ -75,7 +75,7 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
                                     req = { resolve, reject };
                                     requests.set(reqId, req);
                                     postMessage(worker, {
-                                        _rpcType: MessageType.Request,
+                                        _type: MessageType.Request,
                                         reqId,
                                         method,
                                         args,
@@ -86,7 +86,7 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
                                     await result;
                                     while (true) {
                                         postMessage(worker, {
-                                            _rpcType: MessageType.RequestNextIterator,
+                                            _type: MessageType.RequestNextIterator,
                                             reqId,
                                         });
 
@@ -121,12 +121,12 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
                             if (result && result[Symbol.asyncIterator]) {
                                 asyncIterators.set(msg.reqId, result[Symbol.asyncIterator]());
                                 postMessage(worker, {
-                                    _rpcType: MessageType.ResolveIterator,
+                                    _type: MessageType.ResolveIterator,
                                     reqId: msg.reqId,
                                 });
                             } else {
                                 postMessage(worker, {
-                                    _rpcType: MessageType.Resolve,
+                                    _type: MessageType.Resolve,
                                     reqId: msg.reqId,
                                     value: result,
                                 });
@@ -173,7 +173,7 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
                             const { done, value } = await iter.next();
                             isDone = done;
                             postMessage(worker, {
-                                _rpcType: MessageType.ResolveNextIterator,
+                                _type: MessageType.ResolveNextIterator,
                                 reqId: msg.reqId,
                                 done,
                                 value,
@@ -215,13 +215,13 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
     });
 }
 
-function postMessage(worker: Worker, msg: RpcMessage) {
+function postMessage(worker: Worker, msg: Message) {
     worker.postMessage(msg);
 }
 
 function postError(worker: Worker, reqId: number, err: any) {
     postMessage(worker, {
-        _rpcType: MessageType.Reject,
+        _type: MessageType.Reject,
         reqId,
         error: {
             message: err.message,
@@ -231,7 +231,7 @@ function postError(worker: Worker, reqId: number, err: any) {
 
 function postInitiate(worker: Worker, ctor?: Constructor<any, any>) {
     postMessage(worker, {
-        _rpcType: MessageType.Initiate,
+        _type: MessageType.Initiate,
         methods: ctor ? Object.getOwnPropertyNames(ctor.prototype) : [],
     });
 }

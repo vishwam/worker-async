@@ -168,8 +168,8 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
                 case MessageType.Resolve: {
                     const req = requests.get(msg.reqId);
                     if (req !== undefined) {
-                        req.resolve(msg.value);
                         requests.delete(msg.reqId);
+                        req.resolve(msg.value);
                     }
 
                     break;
@@ -212,10 +212,11 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
                 case MessageType.ResolveNextIterator: {
                     const req = requests.get(msg.reqId);
                     if (req !== undefined) {
-                        req.resolve(msg);
                         if (msg.done) {
                             requests.delete(msg.reqId);
                         }
+                        
+                        req.resolve(msg);
                     }
 
                     break;
@@ -229,8 +230,8 @@ export default function promisify<Remote = any, Host = any>(worker: Worker, ctor
                 case MessageType.Reject: {
                     const req = requests.get(msg.reqId);
                     if (req !== undefined) {
-                        req.reject(msg.error);
                         requests.delete(msg.reqId);
+                        req.reject(msg.error);
                     }
                     break;
                 }

@@ -78,16 +78,16 @@ export default async function promisify<Remote = any, Host = any>(worker: Worker
                 for (const method of msg.methods) {
                     remote[method] = (...args: any[]) => {
                         const reqId = lastReqId++;
-                        let req: Request;
                         const result: any = new Promise((resolve, reject) => {
-                            req = { resolve, reject };
-                            requests.set(reqId, req);
                             postMessage(worker, {
                                 _type: MessageType.Request,
                                 reqId,
                                 method,
                                 args,
                             });
+
+                            // once the message was sent successfully, update the requests map:
+                            requests.set(reqId, { resolve, reject });
                         });
 
                         result[Symbol.asyncIterator] = (): AsyncIterator<any> => {
@@ -107,8 +107,7 @@ export default async function promisify<Remote = any, Host = any>(worker: Worker
 
                                     // return a promise for the next reply to this request:
                                     return new Promise((resolve, reject) => {
-                                        req.resolve = resolve;
-                                        req.reject = reject;
+                                        requests.set(reqId, { resolve, reject });
                                     });
                                 },
                                 return: async value => {
@@ -154,11 +153,16 @@ export default async function promisify<Remote = any, Host = any>(worker: Worker
                         const fn: Function = (host as any)[msg.method];
                         const result = await fn.apply(host, msg.args);
                         if (result?.[Symbol.asyncIterator]) {
-                            asyncIterators.set(msg.reqId, result[Symbol.asyncIterator]());
+                            const iter = result[Symbol.asyncIterator]();
+
+                            // tell host that the iterator was resolved:
                             postMessage(worker, {
                                 _type: MessageType.ResolveIterator,
                                 reqId: msg.reqId,
                             });
+
+                            // once the message was sent successfully, update the iterators map:
+                            asyncIterators.set(msg.reqId, iter);
                         } else {
                             postResult(worker, msg.reqId, result);
                         }
@@ -248,12 +252,14 @@ export default async function promisify<Remote = any, Host = any>(worker: Worker
     try {
         await new Promise((resolve, reject) => {
             const reqId = lastReqId++;
-            requests.set(reqId, { resolve, reject });
             postMessage(worker, {
                 _type: MessageType.Initiate,
                 reqId,
                 methods: ctor ? Object.getOwnPropertyNames(ctor.prototype) : [],
             });
+
+            // once the message was sent successfully, update requests map:
+            requests.set(reqId, { resolve, reject });
         });
     } catch (err) {
         // stop listening to messages and rethrow:

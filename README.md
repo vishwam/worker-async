@@ -22,6 +22,8 @@ async function initWorker() {
 }
 ```
 
+Function arguments and return values can be anything supported by the browser's [structured clone algorithm](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm). Errors thrown by the function will show up at the other end with the correct properties.
+
 ## Install
 ```sh
 npm install worker-async

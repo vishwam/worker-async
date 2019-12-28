@@ -12,10 +12,15 @@ export default async function promisify<Remote = any, Host = any>(worker: Worker
     remote: Remote;
 }> {
     const handler = new MessageHandler(msg => worker.postMessage(msg), ctor);
-    const listener = (ev: MessageEvent) => handler.handle(ev.data);
+    const listener = (ev: MessageEvent) => {
+        if (handler.handle(ev.data)) {
+            // this event was intended for us, don't propagate to other listeners:
+            ev.stopImmediatePropagation();
+        }
+    };
 
     // start listening to messages:
-    worker.addEventListener('message', listener, { passive: true });
+    worker.addEventListener('message', listener);
 
     // send an initiate message and wait for the response:
     try {

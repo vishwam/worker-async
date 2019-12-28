@@ -84,7 +84,11 @@ export class MessageHandler<Remote, Host> {
             case MessageType.CancelIterator:
                 this.handleCancelIterator(msg);
                 break;
+            default:
+                return false;
         }
+
+        return true;
     }
 
     async sendInitiate(): Promise<{ host: Host, remote: Remote }> {
@@ -118,7 +122,7 @@ export class MessageHandler<Remote, Host> {
             this.postMessage({ _type: MessageType.Resolve, reqId });
         } catch (error) {
             // reject sendInitiate() on the other side:
-            this.postMessage({ _type: MessageType.Reject, reqId, error });
+            this.postError(reqId, error);
 
             // reject sendInitiate() on the current side:
             this.initiateError = error;
@@ -143,7 +147,7 @@ export class MessageHandler<Remote, Host> {
                 this.postMessage({ _type: MessageType.Resolve, reqId, result });
             }
         } catch (error) {
-            this.postMessage({ _type: MessageType.Reject, reqId, error });
+            this.postError(reqId, error);
         }
     }
 
@@ -155,7 +159,7 @@ export class MessageHandler<Remote, Host> {
             if (msg._type === MessageType.Resolve) {
                 req.resolve(msg.result);
             } else {
-                req.reject(msg.error);
+                req.reject(deserializeError(msg.error));
             }
         }
     }
@@ -172,7 +176,7 @@ export class MessageHandler<Remote, Host> {
             isDone = result.done;
             this.postMessage({ _type: MessageType.Resolve, reqId, result });
         } catch (error) {
-            this.postMessage({ _type: MessageType.Reject, reqId, error });
+            this.postError(reqId, error);
             isDone = true;
         }
 
@@ -234,5 +238,63 @@ export class MessageHandler<Remote, Host> {
         return new Promise<any>((resolve, reject) => {
             this.requests.set(msg.reqId, { resolve, reject });
         });
+    }
+
+    private postError(reqId: number, err: any) {
+        try {
+            this.postMessage({ _type: MessageType.Reject, reqId, error: serializeError(err) });
+        } catch (err) {
+            // if there was an error sending the message, try re-sending with new error:
+            this.postMessage({ _type: MessageType.Reject, reqId, error: serializeError(err) });
+            throw err;
+        }
+    }
+}
+
+function serializeError(err?: any) {
+    if (err instanceof Error) {
+        // most browsers can't structure-clone Error instances (and even those 
+        // that can -- e.g. Chrome -- don't preserve custom fields like `code`),
+        // so do a simple clone ourselves:
+        const result = clone(err);
+        
+        // add marker to denote this is our serialization:
+        result._type = MessageType.Reject; 
+        
+        // copy native fields that don't always show up as object properties:
+        result.message = err.message,
+        result.stack = err.stack;
+        
+        return result;
+    } else {
+        // if users throw a non-Error, try to send it as-is:
+        return err;
+    }
+}
+
+function clone(obj: any) {
+    const result: any = {};
+    for (const name of Object.getOwnPropertyNames(obj)) {
+        const value = obj[name];
+        switch (typeof value) {
+            case 'boolean':
+            case 'number':
+            case 'string':
+                result[name] = value;
+                break;
+        }
+    }
+    
+    return result;
+}
+
+function deserializeError(err?: any) {
+    if (err?._type === MessageType.Reject) {
+        // this is our serialized error. Put it back in an Error instance:
+        const result = new Error();
+        Object.assign(result, err);
+        return result;
+    } else {
+        return err;
     }
 }

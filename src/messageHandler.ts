@@ -10,12 +10,13 @@ const enum MessageType {
 interface InitiateMessage {
     _type: MessageType.Initiate;
     reqId: number;
-    methods: string[];
+    remote: any;
 }
 
 interface RequestMessage {
     _type: MessageType.Request;
     reqId: number;
+    children: string[];
     method: string;
     args: any[];
 }
@@ -44,25 +45,25 @@ interface CancelIteratorMessage {
 
 type Message = InitiateMessage | RequestMessage | ResolveMessage | RejectMessage | RequestNextItemMessage | CancelIteratorMessage;
 
+/** A unique identifier to denote remote functions. Use a string because Symbols can't be structured-cloned */ 
+const FunctionSymbol = '֍Ꝕ'; 
+
 interface Request {
     resolve: (value?: any) => void;
     reject: (err?: any) => void;
 }
 
-export type Constructor<Remote, Host> = new (remote?: Remote) => Host;
-
-export class MessageHandler<Remote, Host> {
+export class MessageHandler {
     private requests = new Map<number, Request>();
     private asyncIterators = new Map<number, AsyncIterator<any>>();
     private lastReqId = 0;
 
-    private host?: any;
     private remote?: any;
     private initiateError?: Error;
 
     constructor(
         private postMessage: (msg: Message) => void,
-        private hostCtor?: Constructor<Remote, Host>,
+        private host?: any,
     ) {
     }
 
@@ -91,32 +92,27 @@ export class MessageHandler<Remote, Host> {
         return true;
     }
 
-    async sendInitiate(): Promise<{ host: Host, remote: Remote }> {
+    async sendInitiate(): Promise<any> {
         // send an initiate message to the other side:
-        const methods = this.hostCtor ? Object.getOwnPropertyNames(this.hostCtor.prototype) : [];
         const reqId = this.newReqId();
-        await this.sendRequest({ _type: MessageType.Initiate, reqId, methods });
+        await this.sendRequest({ _type: MessageType.Initiate, reqId, remote: clone(this.host) });
 
         // if we failed to initiate on our side, rethrow that error:
         if (this.initiateError) {
             throw this.initiateError;
         } else {
-            return { host: this.host, remote: this.remote };
+            return this.remote;
         }
     }
 
     /** handle initiate message sent by the other side */
-    private handleInitiate({ methods, reqId }: InitiateMessage) {
+    private handleInitiate({ remote, reqId }: InitiateMessage) {
         try {
             // first construct the remote object:
-            this.remote = {};
-            for (const method of methods) {
-                this.remote[method] = (...args: any[]) => this.remoteMethod(method, args);
-                // don't use bind - it's much slower than arrow functions in Edge: https://jsperf.com/bind-test9/1
+            this.remote = remote;
+            if (remote != null && typeof remote === 'object') {
+                this.hydrateRemote([], remote);
             }
-
-            // then try to construct our host object:
-            this.host = this.hostCtor ? new this.hostCtor(this.remote) : {};
 
             // resolve sendInitiate() on the other side:
             this.postMessage({ _type: MessageType.Resolve, reqId });
@@ -130,9 +126,13 @@ export class MessageHandler<Remote, Host> {
     }
 
     /** handle request message sent by the other side */
-    private async handleRequest({ method, args, reqId }: RequestMessage) {
+    private async handleRequest({ children, method, args, reqId }: RequestMessage) {
         try {
-            const result = await this.host[method](...args);
+            // get to the object this request is targeting:
+            const obj = children.reduce((obj, key) => obj[key], this.host);
+            
+            // call the method:
+            const result = await obj[method](...args);
             if (result?.[Symbol.asyncIterator]) {
                 // `method` is an async generator. Get the iterator:
                 const iter = result[Symbol.asyncIterator]();
@@ -193,9 +193,26 @@ export class MessageHandler<Remote, Host> {
         }
     }
 
-    private remoteMethod(method: string, args: any[]) {
+    private hydrateRemote(children: string[], obj: any, hydratedObjs = new Set()) {
+        // mark this obj as seen, in case we run into a circular dependency:
+        hydratedObjs.add(obj);
+
+        for (const key of Object.keys(obj)) { // cache keys since we're modifying obj
+            const value = obj[key];
+            if (value === FunctionSymbol) {
+                // hydrate `key` to a remote method:
+                // don't use bind - it's much slower than arrow functions in Edge: https://jsperf.com/bind-test9/1
+                obj[key] = (...args: any[]) => this.remoteMethod(children, key, args);
+            } else if (value != null && typeof value === 'object' && !hydratedObjs.has(value)) {
+                // if we haven't see this object before, hydrate it:
+                this.hydrateRemote(children.concat(key), value, hydratedObjs);
+            }
+        }
+    }
+
+    private remoteMethod(children: string[], method: string, args: any[]) {
         const reqId = this.newReqId();
-        const result: any = this.sendRequest({ _type: MessageType.Request, reqId, method, args });
+        const result: any = this.sendRequest({ _type: MessageType.Request, reqId, children, method, args });
 
         // if caller does a `for await` loop over remote.method,
         // we need to return an aync iterator in the result:
@@ -256,7 +273,7 @@ function serializeError(err?: any) {
         // most browsers can't structure-clone Error instances (and even those 
         // that can -- e.g. Chrome -- don't preserve custom fields like `code`),
         // so do a simple clone ourselves:
-        const result = clone(err);
+        const result = clone(err, false);
         
         // add marker to denote this is our serialization:
         result._type = MessageType.Reject; 
@@ -272,20 +289,60 @@ function serializeError(err?: any) {
     }
 }
 
-function clone(obj: any) {
-    const result: any = {};
-    for (const name of Object.getOwnPropertyNames(obj)) {
-        const value = obj[name];
-        switch (typeof value) {
-            case 'boolean':
-            case 'number':
-            case 'string':
-                result[name] = value;
-                break;
+function clone(obj: any, withFunctions = true, clonedObjs = new Map()) {
+    switch (typeof obj) {
+        case 'bigint':
+        case 'boolean':
+        case 'number':
+        case 'string':
+            return obj;
+        case 'object': {
+            if (obj === null) {
+                return obj;
+            }
+
+            // check if we've already cloned this object (circular dependency):
+            let result = clonedObjs.get(obj);
+            if (result !== undefined) {
+                return result;
+            }
+            
+            // create a new clone object:
+            result = {};
+            clonedObjs.set(obj, result);
+            
+            // first look at obj's own fields:
+            for (const key in obj) {
+                const value  = clone(obj[key], withFunctions, clonedObjs);
+                if (withFunctions || value !== FunctionSymbol) {
+                    result[key] = value;
+                }
+            }
+            
+            // then start looking at obj's prototype, if it exists and is not just the default Object proto:
+            let prototype = Object.getPrototypeOf(obj);
+            while (prototype != null && prototype !== Object.getPrototypeOf(result)) {
+                for (const name of Object.getOwnPropertyNames(prototype)) {
+                    if (!(name in result)) {
+                        const value = clone(prototype[name], withFunctions, clonedObjs);
+                        if (withFunctions || value !== FunctionSymbol) {
+                            result[name] = value;
+                        }
+                    }
+                }
+                
+                // climb up the hierarchy:
+                prototype = Object.getPrototypeOf(prototype);
+            }
+
+            return result;
         }
+        case 'function': 
+            // functions can't be structured-cloned, so mark them with a unique identifier:
+            return FunctionSymbol;
+        default:
+            return undefined;
     }
-    
-    return result;
 }
 
 function deserializeError(err?: any) {

@@ -14,7 +14,7 @@ promisify(self, {
 import promisify from 'worker-async';
 
 const worker = new Worker(...);
-const remote = await promisify(worker);
+const remote = promisify(worker);
 await remote.increment(42); // returns 43
 ```
 
@@ -32,19 +32,18 @@ worker-async allows the worker thread to call the main thread in the same way:
 // on the worker thread:
 import promisify from 'worker-async';
 
-let main; // a reference to the main thread object
-promisify(self, {
+const main = promisify(self, {
     async increment(num) {
         await main.log(`received ${num}`);
         return num + 1;
     }
-}).then(remote => main = remote); // sets main (before `increment` is called)
+});
 
 // on the main thread:
 import promisify from 'worker-async';
 
 const worker = new Worker(...);
-const remote = await promisify(worker, {
+const remote = promisify(worker, {
     // expose `log` to the worker:
     async log(str) {
         console.log(`LOG: ${str}`);
@@ -75,7 +74,7 @@ promisify(self, {
 import promisify from 'worker-async';
 
 const worker = new Worker(...);
-const remote = await promisify(worker);
+const remote = promisify(worker);
 for await (const num of remote.getItems()) {
     console.log(num);
     if (num > 10) break;
@@ -90,7 +89,7 @@ See full working example with webpack/worker-loader/typescript/next.js [here](ht
 ```diff
 -   const worker = new Worker(...);
 +   const worker = require('./example.worker')();
-    const remote = await promisify(worker);
+    const remote = promisify(worker);
 ```
 
 
@@ -110,51 +109,83 @@ promisify(self, new Remote());
 
 // on the main thread:
 import promisify from 'worker-async';
-import { Remote } from './remote';
+import { Remote } from './remote'; // imported only for typings
+// Remote is not called directly, so it will _not_ be included in the main bundle.
 
-async function initWorker() {
-    const worker = new Worker(...);
-    const remote: Remote = await promisify(worker);
-    await remote.increment('abc'); // type-mismatch error
-}
+const worker = new Worker(...);
+const remote: Remote = promisify(worker);
+await remote.increment('abc'); // type-mismatch error
 ```
-
-
-Note: although we imported `Remote` in the main thread, it's only for typings. We're not calling it directly, so typescript removes it from the generated output: `Remote` will _not_ be included in the main thread's bundle.
 
 
 ## Compatibility
-The default import uses ES2017 features supported by all evergreen browsers (Chrome, Firefox, Safari, Edge.) If you need to support IE or other old browsers, just change the import to:
+The default import uses [Proxy](https://caniuse.com/#feat=proxy) and ES2017 features supported by all evergreen browsers (Chrome, Firefox, Safari, Edge.) If you need to support IE or other old browsers, you can use this alternate import that targets [ES3](https://zombiecodekill.com/2016/02/11/ecmascript-3-5-and-2015-browser-compatibility-cheat-sheet/) and doesn't use proxies:
 ```js
-import promisify from 'worker-async/lib/es3';
+import MessageHandler from 'worker-async/lib/es3/messageHandler';
+
+const handler = new MessageHandler(worker, host);
+worker.addEventListener('message', handler.onMessage);
+
+await handler.bind('increment')(42);
 ```
 
-This library does not use evals or proxies, so you don't need to worry about CSP or any other polyfills.
+This library does not use evals, so you don't need to worry about [CSP](https://developer.mozilla.org/docs/Web/HTTP/Headers/Content-Security-Policy).
+
 
 ## Complex interfaces
-The second argument (`host`) passed to `promisify` supports arbitary objects: all functions exposed by the object, its prototype chain, and its children are exposed to the other side:
-```ts
-// on the main thread:
-class BaseLogger {
-    async log(str: string) {
-        console.log(`BASE LOG: ${str}`);
-    }
-}
+The second argument (`host`) passed to `promisify` supports the following types:
+* A function:
+    ```js
+    // on the worker thread:
+    promisify(self, num => num + 1);
 
-class ChildLogger extends BaseLogger {
-    async log(str: string) {
-        super.log(str);
-        console.log('CHILD LOG');
-    }
-}
+    // on the main thread:
+    const remote = promisify(worker);
+    await remote(42); // returns 43
+    ```
 
+* A plain object: all functions in the object and its children are exposed to the other side:
+    ```js
+    promisify(self, {
+        increment: num => num + 1,
+        http: {
+            async fetch(options) { ... }
+        }
+    });
+
+    // on the main thread:
+    await remote.http.fetch(...);
+    ```
+
+* A class object: in addition to the object and its children, all functions in its prototype chain are also exposed:
+    ```ts
+    // on the main thread:
+    class BaseLogger {
+        async log(str: string) {
+            console.log(`LOG: ${str}`);
+        }
+    }
+
+    class ChildLogger extends BaseLogger {
+    }
+
+    class Main {
+        logger = new ChildLogger();
+    }
+
+    promisify(worker, new Main());
+
+    // on the worker thread:
+    const main = promisify(self);
+    await main.logger.log('foo');
+    ```
+
+### Not supported
+Since we have to make a remote/async call, anything that is accessed synchronously cannot be exposed to the other side, for example:
+```js
 class Main {
-    logger = new ChildLogger();
+    value = 42; // primitive values are not exposed
+
+    get foo() { } // getters/setters are synchronous, so not exposed
 }
-
-promisify(worker, new Main());
-
-// on the worker thread:
-main = await promisify(self);
-await main.logger.log('foo'); // will log BASE LOG and CHILD LOG
 ```

@@ -14,7 +14,7 @@ promisify(self, {
 import promisify from 'worker-async';
 
 const worker = new Worker(...);
-const remote = promisify(worker);
+const { remote } = promisify(worker);
 await remote.increment(42); // returns 43
 ```
 
@@ -32,9 +32,9 @@ worker-async allows the worker thread to call the main thread in the same way:
 // on the worker thread:
 import promisify from 'worker-async';
 
-const main = promisify(self, {
+const { remote: main } = promisify(self, {
     async increment(num) {
-        await main.log(`received ${num}`);
+        await main.log(`received ${num}`); // call `log` in the main thread
         return num + 1;
     }
 });
@@ -43,7 +43,7 @@ const main = promisify(self, {
 import promisify from 'worker-async';
 
 const worker = new Worker(...);
-const remote = promisify(worker, {
+const { remote } = promisify(worker, {
     // expose `log` to the worker:
     async log(str) {
         console.log(`LOG: ${str}`);
@@ -74,7 +74,7 @@ promisify(self, {
 import promisify from 'worker-async';
 
 const worker = new Worker(...);
-const remote = promisify(worker);
+const { remote } = promisify(worker);
 for await (const num of remote.getItems()) {
     console.log(num);
     if (num > 10) break;
@@ -89,7 +89,7 @@ See full working example with webpack/worker-loader/typescript/next.js [here](ht
 ```diff
 -   const worker = new Worker(...);
 +   const worker = require('./example.worker')();
-    const remote = promisify(worker);
+    const { remote } = promisify(worker);
 ```
 
 
@@ -113,7 +113,7 @@ import { Remote } from './remote'; // imported only for typings
 // Remote is not called directly, so it will _not_ be included in the main bundle.
 
 const worker = new Worker(...);
-const remote: Remote = promisify(worker);
+const { remote } = promisify<Remote>(worker);
 await remote.increment('abc'); // type-mismatch error
 ```
 
@@ -140,7 +140,7 @@ The second argument (`host`) passed to `promisify` supports the following types:
     promisify(self, num => num + 1);
 
     // on the main thread:
-    const remote = promisify(worker);
+    const { remote } = promisify(worker);
     await remote(42); // returns 43
     ```
 
@@ -176,7 +176,7 @@ The second argument (`host`) passed to `promisify` supports the following types:
     promisify(worker, new Main());
 
     // on the worker thread:
-    const main = promisify(self);
+    const { remote: main } = promisify(self);
     await main.logger.log('foo');
     ```
 
@@ -188,4 +188,59 @@ class Main {
 
     get foo() { } // getters/setters are synchronous, so not exposed
 }
+```
+
+## Multiple promisifies
+You can create multiple promisified objects on the same worker, with each host object getting its own _stream_ so the RPC calls don't conflict with each other. This is useful in scenarios where you need to control the execution state _while the remote call is running_. This is normally done by passing callback functions or event emitters, but since postMessage doesn't allow us to send complex objects or functions, we need to send over a reference (i.e., the stream ID) instead. 
+
+The following example demonstrates this pattern by using an [AbortController](https://developer.mozilla.org/en-US/docs/Web/API/AbortController) to cancel a remote method:
+```ts
+// in the worker thread:
+promisify(self, {
+    async fetch(abortStream: number) {
+        // we'd normally take in an AbortSignal, but since it can't be
+        // sent to a worker, we create a new AbortController here and 
+        // expose it to the main thread at a predetermined stream:
+        const ctrl = new AbortController();
+        const { handler } = promisify(self, ctrl);
+        handler.stream = abortStream;
+        try {
+            // wait for host thread to abort:
+            await new Promise(r => setTimeout(r, 1000));
+            
+            return ctrl.signal.aborted;
+        } finally {
+            // stop listening to messages in this stream. REQUIRED:
+            // you'll have a memory leak in the worker otherwise.
+            handler.stop();
+        }
+    }
+})
+
+// in the main thread:
+const worker = new Worker(...);
+const { remote } = promisify(worker);
+
+fetch() {
+    // create a promisified remote AbortController and have it talk on 
+    // a separate stream so it doesn't conflict with `remote`:
+    const { remote: ctrl, handler } = promisify<AbortController>(worker);
+    try {
+        const abortStream = handler.stream = Math.random(); // can be any number/stream
+        const promise = remote.fetch(abortStream);
+
+        // while fetch is executing, abort the remote controller:
+        ctrl.abort();
+
+        console.log('isAborted? ', await promise); // logs `true`
+    } finally {
+        // stop listening to messages in this stream. REQUIRED:
+        // you'll have a memory leak in the worker otherwise.
+        handler.stop();
+    }
+}
+
+// in the real world, we'd probably tie in the remote controller
+// with an already existing AbortSignal:
+signal.addEventListener('abort', () => ctrl.abort());
 ```

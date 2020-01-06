@@ -35,7 +35,11 @@ interface CancelIteratorMessage {
     reqId: number;
 }
 
-type Message = RequestMessage | ResolveMessage | RejectMessage | RequestNextItemMessage | CancelIteratorMessage;
+type StreamId = string | number;
+
+type Message = (RequestMessage | ResolveMessage | RejectMessage | RequestNextItemMessage | CancelIteratorMessage) & {
+    stream?: StreamId;
+};
 
 interface Request {
     resolve: (value?: any) => void;
@@ -46,36 +50,56 @@ export default class MessageHandler {
     private requests = new Map<number, Request>();
     private asyncIterators = new Map<number, AsyncIterator<any>>();
     private lastReqId = 0;
+    
+    /** The stream ID */
+    stream?: StreamId;
 
     constructor(
         private worker: Worker,
         private host?: any,
     ) {
+        worker.addEventListener('message', this.onMessage);
+    }
+
+    /** Stop listening to messages */
+    stop() {
+        this.worker.removeEventListener('message', this.onMessage);
+
+        // cancel any pending requests:
+        const err = new Error('Handler stopped');
+        for (const { reject } of this.requests.values()) {
+            reject(err);
+        }
+
+        // close async iterators:
+        for (const iter of this.asyncIterators.values()) {
+            iter.return?.();
+        }
     }
 
     /** Handles an incoming Message */
-    onMessage = (ev: MessageEvent) => {
+    private onMessage = (ev: MessageEvent) => {
         const msg: Message = ev.data;
-        switch (msg?._type) {
-            case MessageType.Request:
-                this.handleRequest(msg);
-                break;
-            case MessageType.Resolve:
-            case MessageType.Reject:
-                this.handleResponse(msg);
-                break;
-            case MessageType.RequestNextItem:
-                this.handleRequestNextItem(msg);
-                break;
-            case MessageType.CancelIterator:
-                this.handleCancelIterator(msg);
-                break;
-            default:
-                return;
+        if (msg != null && msg.hasOwnProperty('stream') && msg.stream === this.stream) {
+            // this event was intended for us, don't propagate to other listeners: 
+            ev.stopImmediatePropagation();
+            
+            switch (msg._type) {
+                case MessageType.Request:
+                    this.handleRequest(msg);
+                    break;
+                case MessageType.Resolve:
+                case MessageType.Reject:
+                    this.handleResponse(msg);
+                    break;
+                case MessageType.RequestNextItem:
+                    this.handleRequestNextItem(msg);
+                    break;
+                case MessageType.CancelIterator:
+                    this.handleCancelIterator(msg);
+                    break;
+            }
         }
-        
-        // this event was intended for us, don't propagate to other listeners: 
-        ev.stopImmediatePropagation();
     }
 
     /** handle request message sent by the other side */
@@ -236,8 +260,8 @@ export default class MessageHandler {
         this.postMessage({ _type: MessageType.Reject, reqId, error });
     }
 
-    /** Ensures we only post objects of type Message */
     private postMessage(msg: Message) {
+        msg.stream = this.stream;
         this.worker.postMessage(msg);
     }
 }
